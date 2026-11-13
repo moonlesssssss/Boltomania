@@ -77,7 +77,8 @@
 </div>
 <script>
 (()=>{
-const W=420,H=820,SR=14,G=1600;
+const W=420,H=820,G=1600;
+let SR=14; // радиус винта (на больших фигурах меньше, чтобы узор был плотнее)
 const BOARD={x:14,y:262,w:392,h:544};
 const COLORS=['#ff1f3d','#1565ff','#00c853','#ffd600','#aa00ff','#ff6d00','#ff2fa8','#00d4ff'];
 
@@ -263,17 +264,21 @@ function genRandom(n,R){
 }
 
 // ---------- генерация: режим «Фигуры» (симметричные узоры из досок) ----------
-const FIGURES=['Звезда','Цветок','Колесо','Мандала','Вертушка','Кристалл','Решётка'];
+const FIGURES=['Звезда','Цветок','Колесо','Мандала','Вертушка','Кристалл','Решётка',
+               '★ Роза ветров','★ Снежинка','★ Солнце','★ Мандала XL','★ Ковёр'];
 function genFigure(n,R){
   const cx=W/2;let cy=BOARD.y+BOARD.h/2;
   const kind=(n-1)%FIGURES.length,cyc=Math.floor((n-1)/FIGURES.length);
-  const PW=28,raw=[];let grp=0;
+  const PW=SR>=14?28:25,raw=[];let grp=0;
   const pt=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];
   const seg=(x1,y1,x2,y2,w=PW)=>{const L=Math.hypot(x2-x1,y2-y1)+w;if(L<w*2.3)return;
     raw.push({cx:(x1+x2)/2,cy:(y1+y2)/2,ang:Math.atan2(y2-y1,x2-x1),L,W:w,rr:w/2,g:grp})};
   const ring=(r,k,ph,skip=1)=>{grp++;for(let i=0;i<k;i++){const a=ph+i*2*Math.PI/k;seg(...pt(r,a),...pt(r,a+skip*2*Math.PI/k))}};
   const spokes=(r1,r2,k,ph,tw=0)=>{grp++;for(let i=0;i<k;i++){const a=ph+i*2*Math.PI/k;seg(...pt(r1,a),...pt(r2,a+tw))}};
   const lines=(arr)=>{grp++;for(const[a,b,c,d]of arr)seg(cx+a,cy+b,cx+c,cy+d)};
+  const disc=r=>{grp++;raw.push({cx,cy,ang:0,L:2*r,W:2*r,rr:r,g:grp,disc:true})};
+  // радиальные «галочки»: пара досок от радиуса r1 к r2, расходящихся на угол da
+  const chevrons=(r1,r2,k,ph,da)=>{grp++;for(let i=0;i<k;i++){const a=ph+i*2*Math.PI/k;seg(...pt(r1,a),...pt(r2,a+da));seg(...pt(r1,a),...pt(r2,a-da))}};
   const ph=-Math.PI/2+(R()<.5?0:Math.PI/12)*(cyc%2);
   switch(kind){
     case 0:{const k=5+cyc%3;ring(170,k,ph,2);ring(170,k,ph,1);ring(72,k,ph+Math.PI/k,1);spokes(30,150,k,ph);if(cyc)spokes(80,140,k,ph+Math.PI/k);break}
@@ -295,17 +300,31 @@ function genFigure(n,R){
         for(const o of[-110,-55,0,55,110]){const h=Math.sqrt(170*170-o*o)-12;
           seg(cx+nx*o-c*h,cy+ny*o-s*h,cx+nx*o+c*h,cy+ny*o+s*h)}}
       ring(178,12,ph,1);break}
+    // ----- большие плотные фигуры (4 коробки) -----
+    case 7:{ring(172,16,ph,1);chevrons(102,166,8,ph,Math.PI/8);spokes(66,150,8,ph+Math.PI/8);
+      spokes(36,100,8,ph);ring(58,8,ph+Math.PI/8,1);disc(26);break}
+    case 8:{ring(176,12,ph,1);spokes(36,170,6,ph);
+      grp++;for(let i=0;i<6;i++){const a=ph+i*Math.PI/3;for(const r of[84,128])for(const sg of[-1,1])seg(...pt(r,a),...pt(r+48,a+sg*.42))}
+      ring(120,6,ph+Math.PI/6,1);ring(62,6,ph+Math.PI/6,1);disc(26);break}
+    case 9:{ring(174,18,ph,1);spokes(78,166,12,ph,.32);spokes(58,132,12,ph+Math.PI/12);
+      ring(52,8,ph,1);disc(26);break}
+    case 10:{ring(172,16,ph,1);ring(172,16,ph,3);ring(122,12,ph+Math.PI/12,2);
+      spokes(44,118,12,ph,.3);ring(80,8,ph,1);disc(26);break}
+    case 11:{for(const r of[172,122,72])for(const o of[0,Math.PI/4])ring(r,4,ph+o+Math.PI/4,1);
+      spokes(30,168,8,ph+Math.PI/8);disc(24);break}
   }
   // отверстия: на концах досок; если место занято — сдвигаем к центру доски
   const placed=[],P=[];
   for(const p of raw){
+    if(p.disc){const w=wl(p,0,0);if(placed.every(q=>Math.hypot(q.x-w.x,q.y-w.y)>=2*SR+3)){p.holes=[[0,0]];p.wi=p.g;placed.push(w);P.push(p)}continue}
     const e=p.L/2-p.W/2,holes=[],mark=placed.length;
-    const free=lx=>{const w=wl(p,lx,0);return placed.every(q=>Math.hypot(q.x-w.x,q.y-w.y)>=31)&&holes.every(h=>Math.abs(h[0]-lx)>=34)?w:null};
+    const free=lx=>{const w=wl(p,lx,0);return placed.every(q=>Math.hypot(q.x-w.x,q.y-w.y)>=2*SR+3)&&holes.every(h=>Math.abs(h[0]-lx)>=2*SR+6)?w:null};
     // от каждого конца идём к другому концу и берём первое свободное место
     for(const sign of[1,-1])for(let d=0;d<=2*e;d+=5){const lx=sign*(e-d),w=free(lx);if(w){holes.push([lx,0]);placed.push(w);break}}
     if(p.L>230&&holes.length===2){const w=free(0);if(w){holes.push([0,0]);placed.push(w)}}
     if(holes.length>=2){p.holes=holes;p.wi=p.g;P.push(p)}else placed.length=mark;
   }
+  P.nb=kind>=7?4:3; // сколько коробок сверху
   return P;
 }
 
@@ -330,20 +349,38 @@ function mkSim(queueColors,nb){
 }
 function peakBuffer(seq,queueColors,nb){const sim=mkSim(queueColors,nb);for(const c of seq)sim.add(c);return sim.peak}
 // «Бездумный» игрок: откручивает подходящий по цвету винт, а если такого нет — любой доступный.
-// cov: для каждого винта — доски, которые его закрывают.
-function greedyPeak(S,col,queueColors,nb,cov,R){
-  const sim=mkSim(queueColors,nb),rem=new Map(),done=new Set();
-  for(const s of S)rem.set(s.p,(rem.get(s.p)||0)+1);
+// covered(s,remH): закрыт ли винт при текущем наборе оставшихся винтов.
+function greedyPeak(S,col,queueColors,nb,covered,R){
+  const sim=mkSim(queueColors,nb),remH=newRemH(S),done=new Set();
   for(let k=0;k<S.length;k++){
-    const acc=S.filter(s=>!done.has(s)&&cov.get(s).every(p=>rem.get(p)<=1));
+    const acc=S.filter(s=>!done.has(s)&&!covered(s,remH));
     if(!acc.length)return 99;
     const s=acc.find(s=>sim.fits(col.get(s)))||acc[Math.floor(R()*acc.length)];
-    done.add(s);rem.set(s.p,rem.get(s.p)-1);sim.add(col.get(s));
+    done.add(s);remH.get(s.p).delete(s.hi);sim.add(col.get(s));
     if(sim.buf.length>BUF)return sim.buf.length;
   }
   return sim.peak;
 }
+function newRemH(S){const m=new Map();for(const s of S){if(!m.has(s.p))m.set(s.p,new Set());m.get(s.p).add(s.hi)}return m}
+// Куда повиснет доска, если у неё останется только винт в отверстии hi
+function hangPose(q,hi){
+  const h=q.holes[hi],pv=wl(q,h[0],h[1]),rx=q.cx-pv.x,ry=q.cy-pv.y,d=Math.hypot(rx,ry);
+  if(d<1)return q;
+  return{cx:pv.x,cy:pv.y+d,ang:q.ang+Math.PI/2-Math.atan2(ry,rx),L:q.L,W:q.W,rr:q.rr};
+}
+// Модель перекрытий с учётом повисших досок
+function coverModel(S,P){
+  const cover=new Map(S.map(s=>{const pt=wl(s.p,s.lx,s.ly),lst=[];
+    for(const q of P){if(q.layer<=s.p.layer)continue;
+      if(sdPlate(pt,q)<SR-3)lst.push([q,-1]);
+      if(q.holes.length>1)q.holes.forEach((h,hi)=>{if(sdPlate(pt,hangPose(q,hi))<SR-3)lst.push([q,hi])})}
+    return[s,lst]}));
+  return(s,remH)=>cover.get(s).some(([q,k])=>{const r=remH.get(q);if(!r||r.size===0)return false;
+    if(k===-1)return r.size>=2||q.holes.length===1;
+    return r.size===1&&r.has(k)});
+}
 function genLevel(n){
+  SR=(mode==="fig"&&(n-1)%FIGURES.length>=7)?11:14;
   const R=mulberry32(n*7919+(mode==='fig'?99991:13)),ri=(a,b)=>a+Math.floor(R()*(b-a+1));
   const P=mode==='fig'?genFigure(n,R):genRandom(n,R);
   const e=mode==='fig'?n+5:n+4;
@@ -356,21 +393,20 @@ function genLevel(n){
   P.forEach((p,i)=>{p.layer=i;p.state='fixed';p.omega=0;p.vx=0;p.vy=0;p.flash=0;p.seed=ri(1,1e6);skinPlate(p)});
   const holes=P.flatMap(p=>p.holes.map(h=>wl(p,h[0],h[1])));
   const S=[];
-  for(const p of P)for(const h of p.holes)S.push({p,lx:h[0],ly:h[1],color:null,state:'board',rot:R()*6,shake:0});
-  // порядок снятия (сверху вниз) -> раскраска тройками, поэтому уровень всегда решаем
-  const alive=new Set(P),rem=new Map(P.map(p=>[p,p.holes.length]));let left=S.slice();const order=[];
+  for(const p of P)p.holes.forEach((h,hi)=>S.push({p,hi,lx:h[0],ly:h[1],color:null,state:'board',rot:R()*6,shake:0}));
+  // порядок снятия (сверху вниз, с учётом повисших досок) -> раскраска тройками
+  const covered=coverModel(S,P),remO=newRemH(S);let left=S.slice();const order=[];
   while(left.length){
-    const acc=left.filter(s=>{const pt=wl(s.p,s.lx,s.ly);for(const q of alive)if(q.layer>s.p.layer&&sdPlate(pt,q)<SR-3)return false;return true});
+    const acc=left.filter(s=>!covered(s,remO));
     const s=acc.length?acc[Math.floor(R()*acc.length)]:left[0];
-    order.push(s);left.splice(left.indexOf(s),1);rem.set(s.p,rem.get(s.p)-1);if(rem.get(s.p)<=1)alive.delete(s.p);
+    order.push(s);left.splice(left.indexOf(s),1);remO.get(s.p).delete(s.hi);
   }
   // Сложность: перебираем раскраски и прогоняем каждую через решатель, который снимает
   // винты в доступном порядке `order`. Берём самую трудную раскраску, при которой
   // запасных ячеек хватает впритык — значит, уровень проходим, но только с умом.
-  const N=order.length,nb=mode==='fig'?3:2;
+  const N=order.length,nb=P.nb||2;
   // уровни 1–2 — разминка, дальше бездумная игра должна переполнять ячейки
   const want=n<=1?3:n<=2?4:BUF+1;
-  const cov=new Map(S.map(s=>{const pt=wl(s.p,s.lx,s.ly);return[s,P.filter(q=>q.layer>s.p.layer&&sdPlate(pt,q)<SR-3)]}));
   const pal=COLORS.slice().sort(()=>R()-.5).slice(0,nColors);
   const cands=[];
   for(let att=0;att<160;att++){
@@ -381,7 +417,7 @@ function genLevel(n){
       for(let m=0;m<3;m++)col.set(sh[k*3+m],c)}
     const pk=peakBuffer(order.map(s=>col.get(s)),queue,nb);
     if(pk>BUF)continue;                     // решатель должен уложиться
-    const gp=Math.min(greedyPeak(S,col,queue,nb,cov,R),greedyPeak(S,col,queue,nb,cov,R));
+    const gp=Math.min(greedyPeak(S,col,queue,nb,covered,R),greedyPeak(S,col,queue,nb,covered,R));
     cands.push({score:Math.min(gp,want)*1000+pk*10+lvl,col,queue,pk,gp});
   }
   cands.sort((a,b)=>b.score-a.score);
@@ -390,13 +426,13 @@ function genLevel(n){
   let best=null,fallback=null,tries=0;
   for(const c of cands){
     if(tries++>=7)break;
-    if(!realRun(P,S,c.col,c.queue,order,'solver'))continue;
+    if(!realRun(P,S,c.col,c.queue,order,'solver',nb))continue;
     if(!fallback)fallback=c;
-    if(want<=BUF||!realRun(P,S,c.col,c.queue,order,'greedy')){best=c;break}
+    if(want<=BUF||!realRun(P,S,c.col,c.queue,order,'greedy',nb)){best=c;break}
   }
   best=best||fallback||cands[cands.length-1]||cands[0];
   for(const s of S)s.color=best.col.get(s);
-  return{P,S,queue:best.queue,holes,solution:order,peak:best.pk+'/'+best.gp+(best===fallback?'f':'')};
+  return{P,S,nb,queue:best.queue,holes,solution:order,peak:best.pk+'/'+best.gp+(best===fallback?'f':'')};
 }
 
 // ---------- состояние ----------
@@ -408,7 +444,7 @@ function saveLevels(){
 }
 let plates,screws,queue,boardHoles,boxes,buffer,boosterUsed,state,endTimer,parts,solution,peak;
 
-function boxGeo(){const nb=boxes.length;return nb<=2?{sp:184,bw:152,sd:44}:{sp:134,bw:126,sd:38}}
+function boxGeo(){const nb=boxes.length;return nb<=2?{sp:184,bw:152,sd:44,sc:1}:nb===3?{sp:134,bw:126,sd:38,sc:1}:{sp:99,bw:94,sd:28,sc:1}}
 function boxBase(i){const nb=boxes.length;return{x:W/2+(i-(nb-1)/2)*boxGeo().sp,y:118}}
 function boxOff(b){
   if(b.state==='leaving'){const t=ease(b.t);return{dx:0,dy:-t*110,a:1-b.t}}
@@ -419,26 +455,30 @@ function slotPos(b,k){const p=boxBase(b.i),o=boxOff(b);return{x:p.x+o.dx+(k-1)*b
 function bufPos(k){return{x:W/2+(k-(buffer.length-1)/2)*58,y:218}}
 function newBox(i,color){return{i,color,count:0,arrived:0,items:[],state:color?'entering':'empty',t:0}}
 
-function setupState(P,S,q){
+function setupState(P,S,q,nb){
   plates=P;screws=S;queue=q.slice();
-  const nb=mode==='fig'?3:2;boxes=[];
+  boxes=[];
   for(let i=0;i<nb;i++)boxes.push(newBox(i,queue.length?queue.shift():null));
   buffer=new Array(BUF).fill(null);boosterUsed=false;state='play';endTimer=0;parts=[];
 }
 // Тихий прогон уровня настоящим движком игры (без звука, вибрации и отрисовки).
 let HEADLESS=false;
-function realRun(P,S,col,q,order,strat){
+function realRun(P,S,col,q,order,strat,nb){
   const sv={plates,screws,queue,boxes,buffer,boosterUsed,state,endTimer,parts};
   HEADLESS=true;let win=false;
   try{
     const P2=P.map(p=>({...p})),pi=new Map(P.map((p,i)=>[p,i]));
     const S2=S.map(s=>({...s,p:P2[pi.get(s.p)],color:col.get(s),state:'board',shake:0}));
     const sm=new Map(S.map((s,i)=>[s,S2[i]])),ord=order.map(s=>sm.get(s));
-    setupState(P2,S2,q);
+    setupState(P2,S2,q,nb);
     const run=()=>{for(let i=0;i<10;i++)update(.04)};run();
     for(let k=0;k<S.length*4&&state==='play';k++){
       let s;
-      if(strat==='solver')s=ord.find(s=>s.state==='board'&&!blocker(s));
+      if(strat==='solver'){
+        const nx=ord.find(s=>s.state==='board');let w=0;
+        while(nx&&blocker(nx)&&w++<60)update(.04); // ждём, пока доска докачается
+        s=ord.find(s=>s.state==='board'&&!blocker(s));
+      }
       else{const acc=screws.filter(s=>s.state==='board'&&!blocker(s));s=acc.find(s=>boxes.some(b=>accepting(b)&&b.color===s.color))||acc[0]}
       if(s){const p=wl(s.p,s.lx,s.ly);tap(p.x,p.y)}
       run();
@@ -451,7 +491,7 @@ function realRun(P,S,col,q,order,strat){
 function lvlLabel(){return mode==='fig'?`${FIGURES[(LV.fig-1)%FIGURES.length]} · ${LV.fig}`:'Уровень '+LV.classic}
 function startLevel(){
   const n=LV[mode],L=genLevel(n);
-  setupState(L.P,L.S,L.queue);boardHoles=L.holes;solution=L.solution;peak=L.peak;
+  setupState(L.P,L.S,L.queue,L.nb);boardHoles=L.holes;solution=L.solution;peak=L.peak;
   document.getElementById('lvl').textContent=lvlLabel();
   document.getElementById('boost').disabled=false;
   hideModal();
@@ -492,7 +532,7 @@ function tap(x,y){
   if(state!=='play')return;
   let best=null;
   for(const s of screws){if(s.state!=='board')continue;const p=wl(s.p,s.lx,s.ly),d=Math.hypot(p.x-x,p.y-y);
-    if(d<22&&(!best||s.p.layer>best.s.p.layer||(s.p.layer===best.s.p.layer&&d<best.d)))best={s,d}}
+    if(d<SR+9&&(!best||d<best.d-3||(Math.abs(d-best.d)<=3&&s.p.layer>best.s.p.layer)))best={s,d}}
   if(!best)return;
   const s=best.s,bl=blocker(s);
   if(bl){s.shake=.35;bl.flash=.5;sfx.blocked();haptic('err');return}
@@ -617,8 +657,8 @@ function draw(){
     ctx.fillStyle=g;rrect(x,y,bg.bw,74,18);ctx.fill();
     ctx.lineWidth=3;ctx.strokeStyle=shade(b.color,-.5);ctx.stroke();
     rrect(x+7,y+5,bg.bw-14,13,7);ctx.fillStyle='rgba(255,255,255,.35)';ctx.fill();
-    for(let k=0;k<3;k++){const p=slotPos(b,k);circle(p.x,p.y,SR+3);ctx.fillStyle='rgba(0,0,0,.4)';ctx.fill()}
-    for(const s of b.items)if(s&&s.state==='box'){const p=screwPos(s);drawScrew(p.x,p.y,s.color,s.rot)}
+    for(let k=0;k<3;k++){const p=slotPos(b,k);circle(p.x,p.y,(SR+3)*bg.sc);ctx.fillStyle="rgba(0,0,0,.4)";ctx.fill()}
+    for(const s of b.items)if(s&&s.state==="box"){const p=screwPos(s);drawScrew(p.x,p.y,s.color,s.rot,bg.sc)}
     ctx.restore();
   }
   // доска
