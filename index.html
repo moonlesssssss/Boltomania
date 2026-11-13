@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Болтомания</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{--bg1:#1d2b4a;--bg2:#0f172a;--ui:#ffffff;--accent:#f59e0b}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:radial-gradient(circle at 50% 20%,var(--bg1),var(--bg2));overflow:hidden;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ui);user-select:none}
+  #wrap{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+  canvas{display:block;touch-action:none}
+  #hud{position:absolute;left:0;right:0;top:0;height:6.5%;display:flex;align-items:center;justify-content:space-between;padding:0 3%}
+  .btn{border:0;border-radius:14px;background:rgba(255,255,255,.14);color:#fff;font-weight:700;font-size:15px;padding:8px 12px;cursor:pointer;box-shadow:0 3px 0 rgba(0,0,0,.3)}
+  .btn:active{transform:translateY(2px);box-shadow:0 1px 0 rgba(0,0,0,.3)}
+  .btn:disabled{opacity:.35}
+  #lvl{font-weight:800;font-size:20px;letter-spacing:.5px}
+  #modal{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(5,10,25,.6)}
+  #card{background:#fff;color:#1e293b;border-radius:22px;padding:24px 26px;text-align:center;width:78%;box-shadow:0 20px 50px rgba(0,0,0,.5)}
+  #card h2{margin:0 0 8px;font-size:26px}
+  #card p{margin:0 0 18px;color:#475569}
+  #card .btn{background:var(--accent);margin:4px;font-size:17px;padding:12px 18px}
+  #card .btn.alt{background:#64748b}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="hud">
+    <button class="btn" id="restart" title="Заново">↻</button>
+    <div id="lvl">Уровень 1</div>
+    <button class="btn" id="boost" title="Добавить ячейку">+1 ячейка</button>
+  </div>
+  <div id="modal"><div id="card"><h2 id="mt"></h2><p id="mp"></p><div id="mb"></div></div></div>
+</div>
+<script>
+(()=>{
+const W=420,H=820,SR=13,G=1600;
+const BOARD={x:16,y:262,w:388,h:540};
+const COLORS=['#e53935','#1e88e5','#43a047','#fdd835','#8e24aa','#fb8c00','#ec407a','#00acc1'];
+const cv=document.getElementById('c'),ctx=cv.getContext('2d'),wrap=document.getElementById('wrap');
+let scale=1;
+
+// ---------- Telegram Mini App ----------
+const TG=(window.Telegram&&Telegram.WebApp&&Telegram.WebApp.initData)?Telegram.WebApp:null;
+if(TG){
+  for(const f of[()=>TG.ready(),()=>TG.expand(),()=>TG.disableVerticalSwipes(),
+    ()=>TG.setHeaderColor('#1d2b4a'),()=>TG.setBackgroundColor('#0f172a')])try{f()}catch(e){}
+}
+function haptic(kind){
+  try{if(!TG||!TG.HapticFeedback)return;const H=TG.HapticFeedback;
+    if(kind==='tap')H.impactOccurred('light');else if(kind==='box')H.impactOccurred('medium');
+    else if(kind==='err')H.notificationOccurred('error');else H.notificationOccurred('success');}catch(e){}
+}
+function saveLevel(n){
+  try{localStorage.setItem('bolto_level',n)}catch(e){}
+  try{TG&&TG.CloudStorage&&TG.CloudStorage.setItem('level',String(n))}catch(e){}
+}
+
+function fit(){
+  scale=Math.min(innerWidth/W,innerHeight/H);
+  const dpr=window.devicePixelRatio||1;
+  cv.style.width=W*scale+'px';cv.style.height=H*scale+'px';
+  wrap.style.width=W*scale+'px';wrap.style.height=H*scale+'px';
+  cv.width=Math.round(W*scale*dpr);cv.height=Math.round(H*scale*dpr);
+  ctx.setTransform(scale*dpr,0,0,scale*dpr,0,0);
+}
+addEventListener('resize',fit);fit();
+
+// ---------- utils ----------
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const ease=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+const lerp=(a,b,t)=>a+(b-a)*t;
+function wl(p,lx,ly){const c=Math.cos(p.ang),s=Math.sin(p.ang);return{x:p.cx+lx*c-ly*s,y:p.cy+lx*s+ly*c}}
+function sdPlate(pt,p){
+  const dx=pt.x-p.cx,dy=pt.y-p.cy,c=Math.cos(-p.ang),s=Math.sin(-p.ang);
+  const lx=dx*c-dy*s,ly=dx*s+dy*c,r=p.rr;
+  const qx=Math.abs(lx)-(p.L/2-r),qy=Math.abs(ly)-(p.W/2-r);
+  return Math.hypot(Math.max(qx,0),Math.max(qy,0))+Math.min(Math.max(qx,qy),0)-r;
+}
+function shade(hex,amt){
+  const n=parseInt(hex.slice(1),16);let r=n>>16,g=n>>8&255,b=n&255;
+  const t=amt>0?255:0,k=Math.abs(amt);
+  r=Math.round(lerp(r,t,k));g=Math.round(lerp(g,t,k));b=Math.round(lerp(b,t,k));
+  return`rgb(${r},${g},${b})`;
+}
+function rrect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath()}
+function circle(x,y,r){ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2)}
+
+// ---------- sound ----------
+let AC=null;
+function beep(f,d=.08,type='sine',v=.12){
+  try{AC=AC||new(window.AudioContext||window.webkitAudioContext)();
+    const o=AC.createOscillator(),g=AC.createGain();o.type=type;o.frequency.value=f;
+    g.gain.setValueAtTime(v,AC.currentTime);g.gain.exponentialRampToValueAtTime(.001,AC.currentTime+d);
+    o.connect(g).connect(AC.destination);o.start();o.stop(AC.currentTime+d);}catch(e){}
+}
+
+// ---------- level generation ----------
+function genLevel(n){
+  const R=mulberry32(n*7919+13),ri=(a,b)=>a+Math.floor(R()*(b-a+1));
+  const nPlates=Math.min(3+n,16),nColors=Math.min(3+Math.floor(n/2),COLORS.length);
+  let P=[];let tries=0;
+  const holesAll=()=>P.flatMap(p=>p.holes.map(h=>wl(p,h[0],h[1])));
+  while(P.length<nPlates&&tries++<4000){
+    const panel=n>2&&R()<.25;let L,Wd,rr,holes;
+    if(panel){L=90+R()*50;Wd=L*(.7+R()*.3);rr=14;const ix=L/2-20,iy=Wd/2-20;holes=[[-ix,-iy],[ix,-iy],[ix,iy],[-ix,iy]];}
+    else{L=120+R()*160;Wd=40+R()*8;rr=Wd/2;const e=L/2-Wd/2;holes=[[-e,0],[e,0]];if(L>210&&R()<.7)holes.push([0,0]);}
+    const angs=[0,Math.PI/2,Math.PI/4,-Math.PI/4,R()*Math.PI];
+    const p={cx:BOARD.x+30+R()*(BOARD.w-60),cy:BOARD.y+30+R()*(BOARD.h-60),ang:angs[ri(0,4)],L,W:Wd,rr,holes};
+    let ok=true;
+    for(const[sx,sy]of[[-1,-1],[1,-1],[1,1],[-1,1]]){const w=wl(p,sx*(L/2-rr*.3),sy*(Wd/2-rr*.3));
+      if(w.x<BOARD.x+8||w.x>BOARD.x+BOARD.w-8||w.y<BOARD.y+8||w.y>BOARD.y+BOARD.h-8){ok=false;break}}
+    if(!ok)continue;
+    const ex=holesAll();
+    for(const h of holes){const a=wl(p,h[0],h[1]);for(const b of ex)if(Math.hypot(a.x-b.x,a.y-b.y)<36){ok=false;break}if(!ok)break}
+    if(!ok)continue;
+    p.layer=P.length;p.color=`hsla(${Math.floor(R()*360)},60%,72%,.82)`;p.state='fixed';p.omega=0;p.vx=0;p.vy=0;p.flash=0;
+    P.push(p);
+  }
+  let guard=0;
+  while(P.reduce((a,p)=>a+p.holes.length,0)%3!==0&&guard++<60){
+    const c=P.filter(p=>p.holes.length>2);
+    if(c.length)c[c.length-1].holes.pop();else P.pop();
+  }
+  const S=[];
+  for(const p of P)for(const h of p.holes)S.push({p,lx:h[0],ly:h[1],color:null,state:'board',rot:R()*6,shake:0});
+  // simulate a removal order (top layers first) and colour it in triples
+  const alive=new Set(P),rem=new Map(P.map(p=>[p,p.holes.length]));let left=S.slice();const order=[];
+  while(left.length){
+    const acc=left.filter(s=>{const pt=wl(s.p,s.lx,s.ly);for(const q of alive)if(q.layer>s.p.layer&&sdPlate(pt,q)<SR-3)return false;return true});
+    const s=acc.length?acc[Math.floor(R()*acc.length)]:left[0];
+    order.push(s);left.splice(left.indexOf(s),1);rem.set(s.p,rem.get(s.p)-1);if(!rem.get(s.p))alive.delete(s.p);
+  }
+  const N=order.length,diff=Math.min(.2+n*.06,.8),win=Math.min(2+Math.floor(n/3),7);
+  for(let k=0;k<Math.floor(N*diff);k++){const i=ri(0,N-2),j=Math.min(N-1,i+ri(1,win));[order[i],order[j]]=[order[j],order[i]]}
+  const pal=COLORS.slice().sort(()=>R()-.5).slice(0,nColors);
+  const queue=[];let prev=null;
+  for(let k=0;k<N/3;k++){let c;do{c=pal[ri(0,pal.length-1)]}while(c===prev&&pal.length>1);prev=c;queue.push(c);
+    for(let m=0;m<3;m++)order[k*3+m].color=c}
+  return{P,S,queue,holes:holesAll()};
+}
+
+// ---------- game state ----------
+let level=1;try{level=+localStorage.getItem('bolto_level')||1}catch(e){}
+let plates,screws,queue,boardHoles,boxes,buffer,boosterUsed,state,endTimer,parts;
+
+function boxBase(i){return{x:W/2+(i===0?-90:90),y:120}}
+function boxOff(b){
+  if(b.state==='leaving'){const t=ease(b.t);return{dx:0,dy:-t*110,a:1-b.t}}
+  if(b.state==='entering'){const t=ease(b.t);return{dx:(1-t)*(b.i===0?-280:280),dy:0,a:1}}
+  return{dx:0,dy:0,a:1};
+}
+function slotPos(b,k){const p=boxBase(b.i),o=boxOff(b);return{x:p.x+o.dx+(k-1)*42,y:p.y+o.dy+8}}
+function bufPos(k){return{x:W/2+(k-(buffer.length-1)/2)*56,y:218}}
+
+function newBox(i,color){return{i,color,count:0,arrived:0,items:[],state:color?'entering':'empty',t:0}}
+
+function startLevel(n){
+  const L=genLevel(n);
+  plates=L.P;screws=L.S;queue=L.queue.slice();boardHoles=L.holes;
+  boxes=[newBox(0,queue.shift()),newBox(1,queue.length?queue.shift():null)];
+  buffer=[null,null,null,null,null];boosterUsed=false;state='play';endTimer=0;parts=[];
+  document.getElementById('lvl').textContent='Уровень '+n;
+  document.getElementById('boost').disabled=false;
+  hideModal();
+}
+
+function screwPos(s){
+  if(s.state==='board')return wl(s.p,s.lx,s.ly);
+  if(s.state==='buf')return bufPos(s.dest.idx);
+  if(s.state==='box')return slotPos(s.dest.box,s.dest.idx);
+  if(s.state==='fly'){
+    const to=s.dest.type==='box'?slotPos(s.dest.box,s.dest.idx):bufPos(s.dest.idx);
+    const t=ease(Math.min(1,s.t));
+    return{x:lerp(s.from.x,to.x,t),y:lerp(s.from.y,to.y,t)-Math.sin(Math.PI*Math.min(1,s.t))*70};
+  }
+  return{x:-99,y:-99};
+}
+function blocker(s){
+  const pt=wl(s.p,s.lx,s.ly);
+  for(const q of plates)if(q.layer>s.p.layer&&(q.state==='fixed'||q.state==='swing')&&sdPlate(pt,q)<SR-3)return q;
+  return null;
+}
+function accepting(b){return(b.state==='idle'||b.state==='entering')&&b.count<3}
+
+function sendTo(s,dest){s.from=screwPos(s);s.state='fly';s.dest=dest;s.t=0}
+
+function detach(s){
+  const p=s.p;
+  const rest=screws.filter(o=>o!==s&&o.p===p&&o.state==='board');
+  s.state='fly';
+  if(rest.length===1){p.state='swing';const pv=wl(p,rest[0].lx,rest[0].ly);p.px=pv.x;p.py=pv.y;p.omega=0}
+  else if(rest.length===0){
+    if(p.state==='swing'){const rx=p.cx-p.px,ry=p.cy-p.py;p.vx=-p.omega*ry;p.vy=p.omega*rx}
+    else{p.vx=0;p.vy=0;p.omega=(Math.random()-.5)*2}
+    p.state='fall';
+  }
+}
+
+function tap(x,y){
+  if(state!=='play')return;
+  let best=null;
+  for(const s of screws){if(s.state!=='board')continue;const p=wl(s.p,s.lx,s.ly),d=Math.hypot(p.x-x,p.y-y);
+    if(d<24&&(!best||s.p.layer>best.s.p.layer||(s.p.layer===best.s.p.layer&&d<best.d)))best={s,d}}
+  if(!best)return;
+  const s=best.s,bl=blocker(s);
+  if(bl){s.shake=.35;bl.flash=.5;beep(140,.12,'square',.06);haptic('err');return}
+  const box=boxes.find(b=>accepting(b)&&b.color===s.color);
+  let dest;
+  if(box){const idx=box.count++;box.items[idx]=s;dest={type:'box',box,idx}}
+  else{const i=buffer.indexOf(null);if(i<0){s.shake=.35;beep(140,.12,'square',.06);return}buffer[i]=s;dest={type:'buf',idx:i}}
+  const from=wl(s.p,s.lx,s.ly);detach(s);s.from=from;s.dest=dest;s.t=0;
+  beep(520+Math.random()*120,.07,'triangle');haptic('tap');
+}
+
+function pullAll(){
+  for(const b of boxes){
+    for(let i=0;i<buffer.length;i++){const s=buffer[i];
+      if(s&&s.state==='buf'&&accepting(b)&&s.color===b.color){buffer[i]=null;const idx=b.count++;b.items[idx]=s;sendTo(s,{type:'box',box:b,idx})}}
+  }
+}
+
+function burst(x,y,color){for(let i=0;i<22;i++){const a=Math.random()*Math.PI*2,v=120+Math.random()*260;
+  parts.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v-120,life:.8+Math.random()*.4,c:color,r:2+Math.random()*3})}}
+
+// ---------- update ----------
+function update(dt){
+  for(const s of screws){
+    if(s.shake>0)s.shake-=dt;
+    if(s.state==='fly'){
+      s.t+=dt/.4;s.rot+=dt*25;
+      if(s.t>=1){
+        if(s.dest.type==='box'){s.state='box';const b=s.dest.box;b.arrived++;beep(760,.06);
+          if(b.arrived===3){b.state='leaving';b.t=0;const p=boxBase(b.i);burst(p.x,p.y,b.color);beep(880,.15,'sine',.1);haptic('box');setTimeout(()=>beep(1175,.18,'sine',.1),90)}}
+        else{s.state='buf';pullAll()}
+      }
+    }
+  }
+  for(const b of boxes){
+    if(b.state==='leaving'){b.t+=dt/.45;if(b.t>=1){b.items.forEach(s=>s.state='done');
+      const c=queue.length?queue.shift():null;Object.assign(b,newBox(b.i,c));}}
+    else if(b.state==='entering'){b.t+=dt/.35;if(b.t>=1){b.state='idle';b.t=0;pullAll()}}
+  }
+  for(const p of plates){
+    if(p.flash>0)p.flash-=dt;
+    if(p.state==='swing'){
+      const rx=p.cx-p.px,ry=p.cy-p.py,I=rx*rx+ry*ry+(p.L*p.L+p.W*p.W)/12;
+      p.omega+=G*rx/I*dt;p.omega*=Math.pow(.55,dt);
+      const da=p.omega*dt,c=Math.cos(da),s=Math.sin(da);
+      p.cx=p.px+rx*c-ry*s;p.cy=p.py+rx*s+ry*c;p.ang+=da;
+    }else if(p.state==='fall'){
+      p.vy+=G*dt;p.cx+=p.vx*dt;p.cy+=p.vy*dt;p.ang+=p.omega*dt;
+      if(p.cy>H+400)p.state='gone';
+    }
+  }
+  for(const q of parts){q.vy+=900*dt;q.x+=q.vx*dt;q.y+=q.vy*dt;q.life-=dt}
+  parts=parts.filter(q=>q.life>0);
+
+  if(state==='play'){
+    const busy=screws.some(s=>s.state==='fly')||boxes.some(b=>b.state==='leaving'||b.state==='entering');
+    let end=null;
+    if(!busy){
+      if(boxes.every(b=>b.state==='empty'))end='win';
+      else if(buffer.every(x=>x)){
+        const can=screws.some(s=>s.state==='board'&&!blocker(s)&&boxes.some(b=>accepting(b)&&b.color===s.color));
+        if(!can)end='lose';
+      }
+    }
+    if(end){endTimer+=dt;if(endTimer>(end==='win'?.5:1)){state=end;end==='win'?onWin():onLose()}}else endTimer=0;
+  }
+}
+
+// ---------- draw ----------
+function drawScrew(x,y,color,rot,sc=1){
+  ctx.save();ctx.translate(x,y);ctx.scale(sc,sc);
+  ctx.fillStyle='rgba(0,0,0,.28)';circle(1.5,3,SR);ctx.fill();
+  const g=ctx.createRadialGradient(-4,-5,1,0,0,SR);g.addColorStop(0,shade(color,.55));g.addColorStop(.6,color);g.addColorStop(1,shade(color,-.25));
+  ctx.fillStyle=g;circle(0,0,SR);ctx.fill();
+  ctx.lineWidth=1.5;ctx.strokeStyle=shade(color,-.45);ctx.stroke();
+  ctx.rotate(rot);ctx.strokeStyle='rgba(0,0,0,.5)';ctx.lineWidth=3;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(-6,0);ctx.lineTo(6,0);ctx.moveTo(0,-6);ctx.lineTo(0,6);ctx.stroke();
+  ctx.restore();
+}
+function drawPlate(p){
+  ctx.save();ctx.translate(p.cx,p.cy);ctx.rotate(p.ang);
+  ctx.shadowColor='rgba(0,0,0,.3)';ctx.shadowBlur=8;ctx.shadowOffsetY=4;
+  rrect(-p.L/2,-p.W/2,p.L,p.W,p.rr);ctx.fillStyle=p.color;ctx.fill();
+  ctx.shadowColor='transparent';
+  ctx.lineWidth=2;ctx.strokeStyle=p.flash>0?`rgba(239,68,68,${Math.min(1,p.flash*3)})`:'rgba(255,255,255,.55)';
+  if(p.flash>0)ctx.lineWidth=4;ctx.stroke();
+  rrect(-p.L/2+5,-p.W/2+4,p.L-10,p.W*.3,Math.min(p.rr,8));ctx.fillStyle='rgba(255,255,255,.22)';ctx.fill();
+  for(const h of p.holes){ctx.fillStyle='rgba(20,25,45,.5)';circle(h[0],h[1],SR+1.5);ctx.fill()}
+  ctx.restore();
+}
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  rrect(14,60,W-28,182,22);ctx.fillStyle='rgba(255,255,255,.06)';ctx.fill();
+  for(let k=0;k<buffer.length;k++){const p=bufPos(k);
+    rrect(p.x-23,p.y-23,46,46,12);ctx.fillStyle='rgba(0,0,0,.28)';ctx.fill();
+    circle(p.x,p.y,SR+2);ctx.fillStyle='rgba(0,0,0,.45)';ctx.fill()}
+  for(const b of boxes){if(b.state==='empty')continue;const o=boxOff(b),bp=boxBase(b.i);
+    ctx.save();ctx.globalAlpha=Math.max(0,o.a);
+    const x=bp.x+o.dx-72,y=bp.y+o.dy-32;
+    ctx.fillStyle='rgba(0,0,0,.3)';rrect(x+2,y+5,144,70,16);ctx.fill();
+    const g=ctx.createLinearGradient(0,y,0,y+70);g.addColorStop(0,shade(b.color,.35));g.addColorStop(1,b.color);
+    ctx.fillStyle=g;rrect(x,y,144,70,16);ctx.fill();
+    ctx.lineWidth=3;ctx.strokeStyle=shade(b.color,-.35);ctx.stroke();
+    rrect(x+6,y+4,132,12,6);ctx.fillStyle='rgba(255,255,255,.3)';ctx.fill();
+    for(let k=0;k<3;k++){const p=slotPos(b,k);circle(p.x,p.y,SR+2);ctx.fillStyle='rgba(0,0,0,.35)';ctx.fill()}
+    for(const s of b.items)if(s&&s.state==='box'){const p=screwPos(s);drawScrew(p.x,p.y,s.color,s.rot)}
+    ctx.restore();
+  }
+  ctx.fillStyle='rgba(0,0,0,.35)';rrect(BOARD.x+3,BOARD.y+6,BOARD.w,BOARD.h,24);ctx.fill();
+  const bg=ctx.createLinearGradient(0,BOARD.y,0,BOARD.y+BOARD.h);bg.addColorStop(0,'#dbe4ee');bg.addColorStop(1,'#b8c6d6');
+  ctx.fillStyle=bg;rrect(BOARD.x,BOARD.y,BOARD.w,BOARD.h,24);ctx.fill();
+  ctx.lineWidth=4;ctx.strokeStyle='#94a3b8';ctx.stroke();
+  for(const h of boardHoles){circle(h.x,h.y,SR+1);ctx.fillStyle='#7b8a9e';ctx.fill();circle(h.x,h.y+1.5,SR-2);ctx.fillStyle='#5b6a7e';ctx.fill()}
+  for(const p of plates){if(p.state==='gone')continue;drawPlate(p);
+    for(const s of screws)if(s.p===p&&s.state==='board'){const w=wl(p,s.lx,s.ly);const sx=s.shake>0?Math.sin(s.shake*70)*4:0;drawScrew(w.x+sx,w.y,s.color,s.rot)}}
+  for(const s of screws)if(s.state==='buf'){const p=screwPos(s);drawScrew(p.x,p.y,s.color,s.rot)}
+  for(const s of screws)if(s.state==='fly'){const p=screwPos(s);drawScrew(p.x,p.y,s.color,s.rot,1+Math.sin(Math.PI*Math.min(1,s.t))*.3)}
+  for(const q of parts){ctx.globalAlpha=Math.max(0,Math.min(1,q.life));ctx.fillStyle=q.c;circle(q.x,q.y,q.r);ctx.fill()}
+  ctx.globalAlpha=1;
+  const left=screws.filter(s=>s.state==='board').length;
+  ctx.fillStyle='rgba(255,255,255,.7)';ctx.font='600 12px system-ui';ctx.textAlign='center';
+  ctx.fillText('Винтов на доске: '+left+'   ·   Коробок впереди: '+queue.length,W/2,254);
+}
+
+// ---------- modal ----------
+const modal=document.getElementById('modal');
+function showModal(t,p,btns){document.getElementById('mt').textContent=t;document.getElementById('mp').textContent=p;
+  const mb=document.getElementById('mb');mb.innerHTML='';
+  for(const[b,fn,alt]of btns){const e=document.createElement('button');e.className='btn'+(alt?' alt':'');e.textContent=b;e.onclick=fn;mb.appendChild(e)}
+  modal.style.display='flex'}
+function hideModal(){modal.style.display='none'}
+function onWin(){beep(660,.12);setTimeout(()=>beep(880,.12),120);setTimeout(()=>beep(1320,.25),240);
+  for(let i=0;i<6;i++)burst(60+Math.random()*300,300+Math.random()*300,COLORS[i]);
+  level++;saveLevel(level);haptic('win');
+  showModal('Уровень пройден!','Все пластины сняты.',[['Дальше →',()=>startLevel(level)]])}
+function onLose(){beep(220,.3,'sawtooth',.06);haptic('err');
+  const btns=[];if(!boosterUsed)btns.push(['+1 ячейка',()=>{addSlot();state='play';hideModal()}]);
+  btns.push(['Заново',()=>startLevel(level),!boosterUsed]);
+  showModal('Нет места!','Все ячейки заняты.',btns)}
+function addSlot(){if(boosterUsed)return;boosterUsed=true;buffer.push(null);document.getElementById('boost').disabled=true;beep(990,.1)}
+
+document.getElementById('restart').onclick=()=>startLevel(level);
+document.getElementById('boost').onclick=()=>{if(state==='play')addSlot()};
+cv.addEventListener('pointerdown',e=>{const r=cv.getBoundingClientRect();tap((e.clientX-r.left)*W/r.width,(e.clientY-r.top)*H/r.height)});
+
+startLevel(level);
+// progress synced through Telegram cloud (works across the user's devices)
+try{TG&&TG.CloudStorage&&TG.CloudStorage.getItem('level',(err,v)=>{
+  const n=parseInt(v,10);if(!err&&n>level){level=n;try{localStorage.setItem('bolto_level',n)}catch(e){}startLevel(level)}})}catch(e){}
+let last=performance.now();
+function loop(t){const dt=Math.min(.033,(t-last)/1000);last=t;update(dt);draw();requestAnimationFrame(loop)}
+requestAnimationFrame(loop);
+window.__game={get screws(){return screws},get boxes(){return boxes},get buffer(){return buffer},get state(){return state},get plates(){return plates},tap,blocker,wl,startLevel,step:update};
+})();
+</script>
+</body>
+</html>
