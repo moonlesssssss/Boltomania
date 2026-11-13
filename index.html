@@ -117,7 +117,7 @@ let scale=1;
 const TG=(window.Telegram&&Telegram.WebApp&&Telegram.WebApp.initData)?Telegram.WebApp:null;
 if(TG){for(const f of[()=>TG.ready(),()=>TG.expand(),()=>TG.disableVerticalSwipes()])try{f()}catch(e){}}
 function haptic(kind){
-  try{if(!TG||!TG.HapticFeedback)return;const Hf=TG.HapticFeedback;
+  try{if(HEADLESS||!TG||!TG.HapticFeedback)return;const Hf=TG.HapticFeedback;
     if(kind==='tap')Hf.impactOccurred('light');else if(kind==='box')Hf.impactOccurred('medium');
     else if(kind==='err')Hf.notificationOccurred('error');else Hf.notificationOccurred('success');}catch(e){}
 }
@@ -187,7 +187,7 @@ function skinPlate(p){p.woodT=TH.woods[p.wi%TH.woods.length];p.wood=makeWood(p.L
 let AC=null,OUT=null,NOISE=null,muted=false;try{muted=localStorage.getItem('bolto_mute')==='1'}catch(e){}
 const NOTE={C4:261.6,D4:293.7,E4:329.6,G4:392,A4:440,C5:523.3,D5:587.3,E5:659.3,G5:784,A5:880,C6:1046.5,E6:1318.5};
 function audio(){
-  if(muted)return null;
+  if(muted||HEADLESS)return null;
   try{
     if(!AC){
       AC=new(window.AudioContext||window.webkitAudioContext)();
@@ -239,7 +239,7 @@ const sfx={
 // ---------- генерация: обычный режим ----------
 function genRandom(n,R){
   const ri=(a,b)=>a+Math.floor(R()*(b-a+1));
-  const e=n+4,nPlates=Math.min(3+e,18);
+  const e=n+4,nPlates=Math.min(5+e,19);
   const P=[];let tries=0;
   const holesAll=()=>P.flatMap(p=>p.holes.map(h=>wl(p,h[0],h[1])));
   while(P.length<nPlates&&tries++<5000){
@@ -247,7 +247,9 @@ function genRandom(n,R){
     if(panel){L=90+R()*50;Wd=L*(.7+R()*.3);rr=12;const ix=L/2-20,iy=Wd/2-20;holes=[[-ix,-iy],[ix,-iy],[ix,iy],[-ix,iy]];}
     else{L=115+R()*155;Wd=40+R()*8;rr=Wd/2;const e2=L/2-Wd/2;holes=[[-e2,0],[e2,0]];if(L>205&&R()<.7)holes.push([0,0]);}
     const angs=[0,Math.PI/2,Math.PI/4,-Math.PI/4,R()*Math.PI];
-    const p={cx:BOARD.x+30+R()*(BOARD.w-60),cy:BOARD.y+30+R()*(BOARD.h-60),ang:angs[ri(0,4)],L,W:Wd,rr,holes,wi:ri(0,9)};
+    // доски собираются ближе к центру и ложатся слоями — так больше винтов закрыто
+    const spread=tries<2500?.62:.9;
+    const p={cx:BOARD.x+BOARD.w/2+(R()-.5)*(BOARD.w-60)*spread,cy:BOARD.y+BOARD.h/2+(R()-.5)*(BOARD.h-60)*spread,ang:angs[ri(0,4)],L,W:Wd,rr,holes,wi:ri(0,9)};
     let ok=true;
     for(const[sx,sy]of[[-1,-1],[1,-1],[1,1],[-1,1]]){const w=wl(p,sx*(L/2-rr*.3),sy*(Wd/2-rr*.3));
       if(w.x<BOARD.x+8||w.x>BOARD.x+BOARD.w-8||w.y<BOARD.y+8||w.y>BOARD.y+BOARD.h-8){ok=false;break}}
@@ -308,11 +310,44 @@ function genFigure(n,R){
 }
 
 let mode='classic';
+const BUF=4; // запасные ячейки
+// Решатель: сколько запасных ячеек понадобится, если снимать винты в порядке seq.
+function mkSim(queueColors,nb){
+  const q=queueColors.slice(),bx=[];for(let i=0;i<nb;i++)bx.push({c:q.length?q.shift():null,n:0});
+  const sim={buf:[],peak:0,
+    fits:c=>bx.some(b=>b.c===c&&b.n<3),
+    add(c){
+      const b=bx.find(b=>b.c===c&&b.n<3);
+      if(b)b.n++;else{sim.buf.push(c);if(sim.buf.length>sim.peak)sim.peak=sim.buf.length}
+      let ch=true;
+      while(ch){ch=false;
+        for(const b of bx){
+          if(b.c&&b.n===3){b.c=q.length?q.shift():null;b.n=0;ch=true}
+          if(b.c)for(let i=sim.buf.length-1;i>=0&&b.n<3;i--)if(sim.buf[i]===b.c){sim.buf.splice(i,1);b.n++;ch=true}
+        }}
+    }};
+  return sim;
+}
+function peakBuffer(seq,queueColors,nb){const sim=mkSim(queueColors,nb);for(const c of seq)sim.add(c);return sim.peak}
+// «Бездумный» игрок: откручивает подходящий по цвету винт, а если такого нет — любой доступный.
+// cov: для каждого винта — доски, которые его закрывают.
+function greedyPeak(S,col,queueColors,nb,cov,R){
+  const sim=mkSim(queueColors,nb),rem=new Map(),done=new Set();
+  for(const s of S)rem.set(s.p,(rem.get(s.p)||0)+1);
+  for(let k=0;k<S.length;k++){
+    const acc=S.filter(s=>!done.has(s)&&cov.get(s).every(p=>rem.get(p)<=1));
+    if(!acc.length)return 99;
+    const s=acc.find(s=>sim.fits(col.get(s)))||acc[Math.floor(R()*acc.length)];
+    done.add(s);rem.set(s.p,rem.get(s.p)-1);sim.add(col.get(s));
+    if(sim.buf.length>BUF)return sim.buf.length;
+  }
+  return sim.peak;
+}
 function genLevel(n){
   const R=mulberry32(n*7919+(mode==='fig'?99991:13)),ri=(a,b)=>a+Math.floor(R()*(b-a+1));
   const P=mode==='fig'?genFigure(n,R):genRandom(n,R);
   const e=mode==='fig'?n+5:n+4;
-  const nColors=Math.min(3+Math.floor(e/2),COLORS.length);
+  const nColors=Math.min(2+Math.floor(e/2)+(mode==='fig'?1:0),COLORS.length);
   let guard=0;
   while(P.reduce((a,p)=>a+p.holes.length,0)%3!==0&&guard++<80){
     const c=P.filter(p=>p.holes.length>2);
@@ -327,15 +362,41 @@ function genLevel(n){
   while(left.length){
     const acc=left.filter(s=>{const pt=wl(s.p,s.lx,s.ly);for(const q of alive)if(q.layer>s.p.layer&&sdPlate(pt,q)<SR-3)return false;return true});
     const s=acc.length?acc[Math.floor(R()*acc.length)]:left[0];
-    order.push(s);left.splice(left.indexOf(s),1);rem.set(s.p,rem.get(s.p)-1);if(!rem.get(s.p))alive.delete(s.p);
+    order.push(s);left.splice(left.indexOf(s),1);rem.set(s.p,rem.get(s.p)-1);if(rem.get(s.p)<=1)alive.delete(s.p);
   }
-  const N=order.length,diff=Math.min(.2+e*.06,.85),win=Math.min(2+Math.floor(e/3),7);
-  for(let k=0;k<Math.floor(N*diff);k++){const i=ri(0,N-2),j=Math.min(N-1,i+ri(1,win));[order[i],order[j]]=[order[j],order[i]]}
+  // Сложность: перебираем раскраски и прогоняем каждую через решатель, который снимает
+  // винты в доступном порядке `order`. Берём самую трудную раскраску, при которой
+  // запасных ячеек хватает впритык — значит, уровень проходим, но только с умом.
+  const N=order.length,nb=mode==='fig'?3:2;
+  // уровни 1–2 — разминка, дальше бездумная игра должна переполнять ячейки
+  const want=n<=1?3:n<=2?4:BUF+1;
+  const cov=new Map(S.map(s=>{const pt=wl(s.p,s.lx,s.ly);return[s,P.filter(q=>q.layer>s.p.layer&&sdPlate(pt,q)<SR-3)]}));
   const pal=COLORS.slice().sort(()=>R()-.5).slice(0,nColors);
-  const queue=[];let prev=null;
-  for(let k=0;k<N/3;k++){let c;do{c=pal[ri(0,pal.length-1)]}while(c===prev&&pal.length>1);prev=c;queue.push(c);
-    for(let m=0;m<3;m++)order[k*3+m].color=c}
-  return{P,S,queue,holes};
+  const cands=[];
+  for(let att=0;att<160;att++){
+    const sh=order.slice(),lvl=att%40,swaps=Math.floor(N*(.4+lvl*.05)),win=Math.max(3,Math.min(3+Math.floor(lvl/3),Math.floor(N/2)));
+    for(let k=0;k<(att<4?Math.floor(N*.2):swaps);k++){const i=ri(0,N-2),j=Math.min(N-1,i+ri(1,att<4?2:win));[sh[i],sh[j]]=[sh[j],sh[i]]}
+    const col=new Map(),queue=[];let prev=null;
+    for(let k=0;k<N/3;k++){let c;do{c=pal[ri(0,pal.length-1)]}while(c===prev&&pal.length>1);prev=c;queue.push(c);
+      for(let m=0;m<3;m++)col.set(sh[k*3+m],c)}
+    const pk=peakBuffer(order.map(s=>col.get(s)),queue,nb);
+    if(pk>BUF)continue;                     // решатель должен уложиться
+    const gp=Math.min(greedyPeak(S,col,queue,nb,cov,R),greedyPeak(S,col,queue,nb,cov,R));
+    cands.push({score:Math.min(gp,want)*1000+pk*10+lvl,col,queue,pk,gp});
+  }
+  cands.sort((a,b)=>b.score-a.score);
+  // Проверка настоящим движком (с физикой качающихся досок): решатель обязан выиграть,
+  // а бездумная игра на сложных уровнях — проиграть.
+  let best=null,fallback=null,tries=0;
+  for(const c of cands){
+    if(tries++>=7)break;
+    if(!realRun(P,S,c.col,c.queue,order,'solver'))continue;
+    if(!fallback)fallback=c;
+    if(want<=BUF||!realRun(P,S,c.col,c.queue,order,'greedy')){best=c;break}
+  }
+  best=best||fallback||cands[cands.length-1]||cands[0];
+  for(const s of S)s.color=best.col.get(s);
+  return{P,S,queue:best.queue,holes,solution:order,peak:best.pk+'/'+best.gp+(best===fallback?'f':'')};
 }
 
 // ---------- состояние ----------
@@ -345,7 +406,7 @@ function saveLevels(){
   try{localStorage.setItem('bolto_level',LV.classic);localStorage.setItem('bolto_flevel',LV.fig)}catch(e){}
   try{TG&&TG.CloudStorage&&(TG.CloudStorage.setItem('level',String(LV.classic)),TG.CloudStorage.setItem('flevel',String(LV.fig)))}catch(e){}
 }
-let plates,screws,queue,boardHoles,boxes,buffer,boosterUsed,state,endTimer,parts;
+let plates,screws,queue,boardHoles,boxes,buffer,boosterUsed,state,endTimer,parts,solution,peak;
 
 function boxGeo(){const nb=boxes.length;return nb<=2?{sp:184,bw:152,sd:44}:{sp:134,bw:126,sd:38}}
 function boxBase(i){const nb=boxes.length;return{x:W/2+(i-(nb-1)/2)*boxGeo().sp,y:118}}
@@ -358,13 +419,39 @@ function slotPos(b,k){const p=boxBase(b.i),o=boxOff(b);return{x:p.x+o.dx+(k-1)*b
 function bufPos(k){return{x:W/2+(k-(buffer.length-1)/2)*58,y:218}}
 function newBox(i,color){return{i,color,count:0,arrived:0,items:[],state:color?'entering':'empty',t:0}}
 
+function setupState(P,S,q){
+  plates=P;screws=S;queue=q.slice();
+  const nb=mode==='fig'?3:2;boxes=[];
+  for(let i=0;i<nb;i++)boxes.push(newBox(i,queue.length?queue.shift():null));
+  buffer=new Array(BUF).fill(null);boosterUsed=false;state='play';endTimer=0;parts=[];
+}
+// Тихий прогон уровня настоящим движком игры (без звука, вибрации и отрисовки).
+let HEADLESS=false;
+function realRun(P,S,col,q,order,strat){
+  const sv={plates,screws,queue,boxes,buffer,boosterUsed,state,endTimer,parts};
+  HEADLESS=true;let win=false;
+  try{
+    const P2=P.map(p=>({...p})),pi=new Map(P.map((p,i)=>[p,i]));
+    const S2=S.map(s=>({...s,p:P2[pi.get(s.p)],color:col.get(s),state:'board',shake:0}));
+    const sm=new Map(S.map((s,i)=>[s,S2[i]])),ord=order.map(s=>sm.get(s));
+    setupState(P2,S2,q);
+    const run=()=>{for(let i=0;i<10;i++)update(.04)};run();
+    for(let k=0;k<S.length*4&&state==='play';k++){
+      let s;
+      if(strat==='solver')s=ord.find(s=>s.state==='board'&&!blocker(s));
+      else{const acc=screws.filter(s=>s.state==='board'&&!blocker(s));s=acc.find(s=>boxes.some(b=>accepting(b)&&b.color===s.color))||acc[0]}
+      if(s){const p=wl(s.p,s.lx,s.ly);tap(p.x,p.y)}
+      run();
+    }
+    for(let i=0;i<80&&state==='play';i++)update(.04);
+    win=state==='win';
+  }finally{({plates,screws,queue,boxes,buffer,boosterUsed,state,endTimer,parts}=sv);HEADLESS=false}
+  return win;
+}
 function lvlLabel(){return mode==='fig'?`${FIGURES[(LV.fig-1)%FIGURES.length]} · ${LV.fig}`:'Уровень '+LV.classic}
 function startLevel(){
   const n=LV[mode],L=genLevel(n);
-  plates=L.P;screws=L.S;queue=L.queue.slice();boardHoles=L.holes;
-  const nb=mode==='fig'?3:2;boxes=[];
-  for(let i=0;i<nb;i++)boxes.push(newBox(i,queue.length?queue.shift():null));
-  buffer=[null,null,null,null,null];boosterUsed=false;state='play';endTimer=0;parts=[];
+  setupState(L.P,L.S,L.queue);boardHoles=L.holes;solution=L.solution;peak=L.peak;
   document.getElementById('lvl').textContent=lvlLabel();
   document.getElementById('boost').disabled=false;
   hideModal();
@@ -470,7 +557,7 @@ function update(dt){
         if(!can)end='lose';
       }
     }
-    if(end){endTimer+=dt;if(endTimer>(end==='win'?.5:1)){state=end;end==='win'?onWin():onLose()}}else endTimer=0;
+    if(end){endTimer+=dt;if(endTimer>(end==='win'?.5:1)){state=end;if(!HEADLESS)end==='win'?onWin():onLose()}}else endTimer=0;
   }
 }
 
@@ -614,7 +701,7 @@ try{TG&&TG.CloudStorage&&TG.CloudStorage.getItems(['level','flevel'],(err,v)=>{
 let last=performance.now();
 function loop(t){const dt=Math.min(.033,(t-last)/1000);last=t;update(dt);draw();requestAnimationFrame(loop)}
 requestAnimationFrame(loop);
-window.__game={get screws(){return screws},get boxes(){return boxes},get buffer(){return buffer},get state(){return state},get plates(){return plates},
+window.__game={get screws(){return screws},get boxes(){return boxes},get buffer(){return buffer},get state(){return state},get plates(){return plates},get solution(){return solution},get peak(){return peak},
   tap,blocker,wl,step:update,draw,hideMenu,applyTheme,LV,setMode(m){mode=m},startLevel};
 })();
 </script>
